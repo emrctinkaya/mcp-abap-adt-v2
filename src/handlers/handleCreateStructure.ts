@@ -1,0 +1,299 @@
+/**
+ * Handler for creating ABAP DDIC structures via ADT REST API
+ */
+
+import axios from 'axios';
+import { getBaseUrl, getAuthHeaders, return_error, return_response } from '../lib/utils';
+
+// ============================================================================
+// Type Definitions
+// ============================================================================
+
+export interface StructureField {
+  name: string;
+  type: string;  // e.g., 'abap.char(10)', 'abap.numc(8)', or data element name
+}
+
+export interface CreateStructureArgs {
+  structure_name: string;
+  description: string;
+  package_name: string;
+  transport_request?: string;
+  fields: StructureField[];
+  enhancement_category?: 'NOT_EXTENSIBLE' | 'EXTENSIBLE_ANY' | 'EXTENSIBLE_CHARACTER' | 'NOT_CLASSIFIED';
+}
+
+// ============================================================================
+// Main Handler
+// ============================================================================
+
+/**
+ * Handles the CreateStructure tool request
+ */
+export async function handleCreateStructure(args: any) {
+  const {
+    structure_name,
+    description,
+    package_name,
+    transport_request = '',
+    fields,
+    enhancement_category = 'NOT_EXTENSIBLE'
+  } = args as CreateStructureArgs;
+
+  // Validate inputs
+  if (!structure_name) {
+    return return_error('Structure name is required');
+  }
+
+  if (!description) {
+    return return_error('Description is required');
+  }
+
+  if (!package_name) {
+    return return_error('Package name is required');
+  }
+
+  if (!fields || !Array.isArray(fields) || fields.length === 0) {
+    return return_error('At least one field is required');
+  }
+
+  // Validate each field
+  for (const field of fields) {
+    if (!field.name || !field.type) {
+      return return_error('Each field must have a name and type');
+    }
+  }
+
+  // Check transport request for non-local packages
+  if (package_name.toUpperCase() !== '$TMP' && !transport_request) {
+    return return_error('Transport request is required for non-local packages (use $TMP for local objects)');
+  }
+
+  const structNameUpper = structure_name.toUpperCase();
+  const structNameLower = structure_name.toLowerCase();
+
+  try {
+    const baseUrl = getBaseUrl();
+    const authHeaders = getAuthHeaders();
+
+    // Step 1: Get CSRF token
+    const csrfToken = await fetchCsrfToken(baseUrl, authHeaders);
+
+    // Step 2: Generate source code
+    const sourceCode = generateStructureSource(
+      structNameLower,
+      description,
+      fields,
+      enhancement_category
+    );
+
+    // Step 3: Generate metadata XML
+    const metadataXml = generateStructureMetadataXml(
+      structNameUpper,
+      description,
+      package_name.toUpperCase()
+    );
+
+    // Step 4: Create the structure object
+    const createUrl = `${baseUrl}/sap/bc/adt/ddic/structures`;
+    const createParams: Record<string, string> = {};
+
+    if (transport_request && package_name.toUpperCase() !== '$TMP') {
+      createParams['corrNr'] = transport_request;
+    }
+
+    await axios.post(createUrl, metadataXml, {
+      headers: {
+        ...authHeaders,
+        'Content-Type': 'application/vnd.sap.adt.structures.v2+xml',
+        'X-CSRF-Token': csrfToken,
+        'Accept': 'application/vnd.sap.adt.structures.v2+xml, application/xml'
+      },
+      params: createParams
+    });
+
+    // Step 5: Upload the source code
+    const sourceUrl = `${baseUrl}/sap/bc/adt/ddic/structures/${structNameLower}/source/main`;
+
+    await axios.put(sourceUrl, sourceCode, {
+      headers: {
+        ...authHeaders,
+        'Content-Type': 'text/plain; charset=utf-8',
+        'X-CSRF-Token': csrfToken
+      },
+      params: createParams
+    });
+
+    // Step 6: Activate the structure
+    await activateObject(baseUrl, authHeaders, csrfToken, structNameLower, structNameUpper);
+
+    // Return success response
+    const successMessage = `✅ Structure ${structNameUpper} created and activated successfully in package ${package_name.toUpperCase()}
+
+Generated Source Code:
+\`\`\`abap
+${sourceCode}
+\`\`\``;
+
+    return return_response(successMessage);
+
+  } catch (error: any) {
+    // Handle specific error cases
+    if (axios.isAxiosError(error)) {
+      const status = error.response?.status;
+      const responseData = error.response?.data;
+
+      if (status === 401) {
+        return return_error('Authentication failed. Check SAP credentials in .env file.');
+      }
+
+      if (status === 403) {
+        return return_error('Access forbidden. Check user authorizations or CSRF token.');
+      }
+
+      if (status === 404) {
+        return return_error('ADT endpoint not found. Ensure /sap/bc/adt service is activated in SICF.');
+      }
+
+      if (status === 409) {
+        return return_error(`Structure ${structNameUpper} already exists.`);
+      }
+
+      // Extract error message from response if available
+      let errorDetail = '';
+      if (typeof responseData === 'string') {
+        // Try to extract error message from XML response
+        const match = responseData.match(/<message[^>]*>([^<]+)<\/message>/i);
+        if (match) {
+          errorDetail = match[1];
+        } else {
+          errorDetail = responseData.substring(0, 500);
+        }
+      } else if (responseData) {
+        errorDetail = JSON.stringify(responseData).substring(0, 500);
+      }
+
+      return return_error(`HTTP ${status}: ${errorDetail || error.message}`);
+    }
+
+    return return_error(`Failed to create structure: ${error.message || 'Unknown error'}`);
+  }
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+/**
+ * Fetches a CSRF token from the SAP system
+ */
+async function fetchCsrfToken(baseUrl: string, authHeaders: any): Promise<string> {
+  const response = await axios.get(`${baseUrl}/sap/bc/adt/discovery`, {
+    headers: {
+      ...authHeaders,
+      'X-CSRF-Token': 'Fetch',
+      'Accept': 'application/xml'
+    }
+  });
+
+  const csrfToken = response.headers['x-csrf-token'];
+  if (!csrfToken) {
+    throw new Error('Failed to obtain CSRF token from SAP system');
+  }
+
+  return csrfToken;
+}
+
+/**
+ * Generates the Dictionary DDL source code for a structure
+ */
+function generateStructureSource(
+  structureName: string,
+  description: string,
+  fields: StructureField[],
+  enhancementCategory: string
+): string {
+  // Escape single quotes in description
+  const escapedDescription = description.replace(/'/g, "''");
+
+  // Generate field definitions
+  const fieldDefinitions = fields
+    .map(f => `  ${f.name.toLowerCase()} : ${f.type};`)
+    .join('\n');
+
+  return `@EndUserText.label : '${escapedDescription}'
+@AbapCatalog.enhancement.category : #${enhancementCategory}
+define structure ${structureName} {
+${fieldDefinitions}
+}`;
+}
+
+/**
+ * Generates the metadata XML for structure creation
+ */
+function generateStructureMetadataXml(
+  structureName: string,
+  description: string,
+  packageName: string
+): string {
+  // Escape XML special characters in description
+  const escapedDescription = escapeXml(description);
+
+  // Get username from environment for responsible field
+  const responsible = process.env.SAP_USERNAME?.toUpperCase() || 'SAP';
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<structure:structure xmlns:structure="http://www.sap.com/adt/ddic/structures"
+                     xmlns:adtcore="http://www.sap.com/adt/core"
+                     adtcore:name="${structureName}"
+                     adtcore:description="${escapedDescription}"
+                     adtcore:language="EN"
+                     adtcore:masterLanguage="EN"
+                     adtcore:responsible="${responsible}"
+                     structure:category="DEFAULT">
+  <adtcore:packageRef adtcore:name="${packageName}"/>
+</structure:structure>`;
+}
+
+/**
+ * Activates an ABAP object
+ */
+async function activateObject(
+  baseUrl: string,
+  authHeaders: any,
+  csrfToken: string,
+  structNameLower: string,
+  structNameUpper: string
+): Promise<void> {
+  const activateUrl = `${baseUrl}/sap/bc/adt/activation`;
+
+  const activationBody = `<?xml version="1.0" encoding="UTF-8"?>
+<adtcore:objectReferences xmlns:adtcore="http://www.sap.com/adt/core">
+  <adtcore:objectReference adtcore:uri="/sap/bc/adt/ddic/structures/${structNameLower}" adtcore:name="${structNameUpper}"/>
+</adtcore:objectReferences>`;
+
+  await axios.post(activateUrl, activationBody, {
+    headers: {
+      ...authHeaders,
+      'Content-Type': 'application/xml',
+      'X-CSRF-Token': csrfToken,
+      'Accept': 'application/xml'
+    },
+    params: {
+      'method': 'activate',
+      'preauditRequested': 'true'
+    }
+  });
+}
+
+/**
+ * Escapes XML special characters
+ */
+function escapeXml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
