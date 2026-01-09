@@ -3,7 +3,7 @@
  */
 
 import axios from 'axios';
-import { getBaseUrl, getAuthHeaders, return_error, return_response } from '../lib/utils';
+import { getBaseUrl, getAuthHeaders, return_error } from '../lib/utils';
 
 // ============================================================================
 // Type Definitions
@@ -89,11 +89,11 @@ export async function handleCreateTable(args: any) {
   const tableNameLower = table_name.toLowerCase();
 
   try {
-    const baseUrl = getBaseUrl();
-    const authHeaders = getAuthHeaders();
+    const baseUrl = await getBaseUrl();
+    const authHeaders = await getAuthHeaders();
 
     // Step 1: Get CSRF token
-    const csrfToken = await fetchCsrfToken(baseUrl, authHeaders);
+    const csrfToken = await fetchCsrfToken(baseUrl.toString(), authHeaders);
 
     // Step 2: Generate source code
     const sourceCode = generateTableSource(
@@ -115,7 +115,8 @@ export async function handleCreateTable(args: any) {
     );
 
     // Step 4: Create the table object
-    const createUrl = `${baseUrl}/sap/bc/adt/ddic/tables`;
+    const baseUrlStr = baseUrl.toString();
+    const createUrl = `${baseUrlStr}/sap/bc/adt/ddic/tables`;
     const createParams: Record<string, string> = {};
 
     if (transport_request && package_name.toUpperCase() !== '$TMP') {
@@ -133,7 +134,7 @@ export async function handleCreateTable(args: any) {
     });
 
     // Step 5: Upload the source code
-    const sourceUrl = `${baseUrl}/sap/bc/adt/ddic/tables/${tableNameLower}/source/main`;
+    const sourceUrl = `${baseUrlStr}/sap/bc/adt/ddic/tables/${tableNameLower}/source/main`;
 
     await axios.put(sourceUrl, sourceCode, {
       headers: {
@@ -145,7 +146,7 @@ export async function handleCreateTable(args: any) {
     });
 
     // Step 6: Activate the table
-    await activateObject(baseUrl, authHeaders, csrfToken, tableNameLower, tableNameUpper);
+    await activateObject(baseUrlStr, authHeaders, csrfToken, tableNameLower, tableNameUpper);
 
     // Return success response
     const successMessage = `✅ Database table ${tableNameUpper} created and activated successfully in package ${package_name.toUpperCase()}
@@ -155,7 +156,13 @@ Generated Source Code:
 ${sourceCode}
 \`\`\``;
 
-    return return_response(successMessage);
+    return {
+      isError: false,
+      content: [{
+        type: 'text',
+        text: successMessage
+      }]
+    };
 
   } catch (error: any) {
     // Handle specific error cases
