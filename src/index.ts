@@ -10,7 +10,7 @@ import {
 import path from 'path';
 import dotenv from 'dotenv';
 
-// Import handler functions
+// Import handler functions - READ operations
 import { handleGetProgram } from './handlers/handleGetProgram';
 import { handleGetClass } from './handlers/handleGetClass';
 import { handleGetFunctionGroup } from './handlers/handleGetFunctionGroup';
@@ -24,7 +24,10 @@ import { handleGetTypeInfo } from './handlers/handleGetTypeInfo';
 import { handleGetInterface } from './handlers/handleGetInterface';
 import { handleGetTransaction } from './handlers/handleGetTransaction';
 import { handleSearchObject } from './handlers/handleSearchObject';
+
+// Import handler functions - CREATE operations
 import { handleCreateStructure } from './handlers/handleCreateStructure';
+import { handleCreateTable } from './handlers/handleCreateTable';
 
 // Import shared utility functions and types
 import { getBaseUrl, getAuthHeaders, createAxiosInstance, makeAdtRequest, return_error, return_response } from './lib/utils';
@@ -79,7 +82,7 @@ export class mcp_abap_adt_server {
     this.server = new Server(  // Initialize the MCP server
       {
         name: 'mcp-abap-adt', // Server name
-        version: '0.1.0',       // Server version
+        version: '0.2.0',       // Server version - bumped for new features
       },
       {
         capabilities: {
@@ -101,7 +104,8 @@ export class mcp_abap_adt_server {
     // Handler for ListToolsRequest
     this.server.setRequestHandler(ListToolsRequestSchema, async () => {
       return {
-        tools: [ // Define available tools
+        tools: [
+          // ==================== READ TOOLS ====================
           {
             name: 'GetProgram',
             description: 'Retrieve ABAP program source code',
@@ -298,7 +302,8 @@ export class mcp_abap_adt_server {
               required: ['interface_name']
             }
           },
-          // ========== NEW TOOL: CreateStructure ==========
+
+          // ==================== CREATE TOOLS ====================
           {
             name: 'CreateStructure',
             description: 'Create a new ABAP DDIC structure in the SAP system',
@@ -333,7 +338,7 @@ export class mcp_abap_adt_server {
                       },
                       type: {
                         type: 'string',
-                        description: 'Field type - either built-in type (e.g., abap.char(10), abap.numc(8), abap.string, abap.int4) or data element name'
+                        description: 'Field type - built-in (abap.char(10), abap.numc(8), abap.string, abap.int4, abap.dats, abap.tims) or data element name'
                       }
                     },
                     required: ['name', 'type']
@@ -347,6 +352,82 @@ export class mcp_abap_adt_server {
               },
               required: ['structure_name', 'description', 'package_name', 'fields']
             }
+          },
+          {
+            name: 'CreateTable',
+            description: 'Create a new ABAP DDIC database table in the SAP system',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                table_name: {
+                  type: 'string',
+                  description: 'Name of the table (e.g., ZMY_TABLE). Will be converted to uppercase.'
+                },
+                description: {
+                  type: 'string',
+                  description: 'Short description of the table (max 60 characters)'
+                },
+                package_name: {
+                  type: 'string',
+                  description: 'ABAP package name (e.g., ZPACKAGE or $TMP for local/temporary objects)'
+                },
+                transport_request: {
+                  type: 'string',
+                  description: 'Transport request number (e.g., DEVK900123). Required for non-local packages. Leave empty for $TMP.'
+                },
+                fields: {
+                  type: 'array',
+                  description: 'Array of table fields. At least one field must be marked as key.',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      name: {
+                        type: 'string',
+                        description: 'Field name'
+                      },
+                      type: {
+                        type: 'string',
+                        description: 'Field type - built-in (abap.char(10), abap.numc(8), abap.string, abap.int4, abap.dats, abap.tims, abap.clnt) or data element name'
+                      },
+                      isKey: {
+                        type: 'boolean',
+                        description: 'Whether this field is part of the primary key (default: false)'
+                      },
+                      notNull: {
+                        type: 'boolean',
+                        description: 'Whether this field cannot be null (automatically true for key fields)'
+                      }
+                    },
+                    required: ['name', 'type']
+                  }
+                },
+                table_category: {
+                  type: 'string',
+                  enum: ['TRANSPARENT', 'CLUSTER', 'POOLED', 'GLOBAL_TEMPORARY'],
+                  description: 'Table category (default: TRANSPARENT)'
+                },
+                delivery_class: {
+                  type: 'string',
+                  enum: ['A', 'C', 'L', 'G', 'E', 'S', 'W'],
+                  description: 'Delivery class: A=Application, C=Customizing, L=Temporary, G=Customer, E=System, S=System, W=System (default: A)'
+                },
+                data_maintenance: {
+                  type: 'string',
+                  enum: ['RESTRICTED', 'ALLOWED', 'NOT_ALLOWED'],
+                  description: 'Data maintenance settings (default: RESTRICTED)'
+                },
+                enhancement_category: {
+                  type: 'string',
+                  enum: ['NOT_EXTENSIBLE', 'EXTENSIBLE_ANY', 'EXTENSIBLE_CHARACTER', 'NOT_CLASSIFIED'],
+                  description: 'Enhancement category for the table (default: NOT_EXTENSIBLE)'
+                },
+                include_client: {
+                  type: 'boolean',
+                  description: 'Whether to include MANDT/CLIENT field as first key field (default: true)'
+                }
+              },
+              required: ['table_name', 'description', 'package_name', 'fields']
+            }
           }
         ]
       };
@@ -355,6 +436,7 @@ export class mcp_abap_adt_server {
     // Handler for CallToolRequest
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
       switch (request.params.name) {
+        // ==================== READ OPERATIONS ====================
         case 'GetProgram':
           return await handleGetProgram(request.params.arguments);
         case 'GetClass':
@@ -381,9 +463,13 @@ export class mcp_abap_adt_server {
           return await handleGetInterface(request.params.arguments);
         case 'GetTransaction':
           return await handleGetTransaction(request.params.arguments);
-        // ========== NEW HANDLER: CreateStructure ==========
+
+        // ==================== CREATE OPERATIONS ====================
         case 'CreateStructure':
           return await handleCreateStructure(request.params.arguments);
+        case 'CreateTable':
+          return await handleCreateTable(request.params.arguments);
+
         default:
           throw new McpError(
             ErrorCode.MethodNotFound,
