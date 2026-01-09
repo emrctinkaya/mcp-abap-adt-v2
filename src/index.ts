@@ -24,6 +24,7 @@ import { handleGetTypeInfo } from './handlers/handleGetTypeInfo';
 import { handleGetInterface } from './handlers/handleGetInterface';
 import { handleGetTransaction } from './handlers/handleGetTransaction';
 import { handleSearchObject } from './handlers/handleSearchObject';
+import { handleCreateStructure } from './handlers/handleCreateStructure';
 
 // Import shared utility functions and types
 import { getBaseUrl, getAuthHeaders, createAxiosInstance, makeAdtRequest, return_error, return_response } from './lib/utils';
@@ -296,6 +297,56 @@ export class mcp_abap_adt_server {
               },
               required: ['interface_name']
             }
+          },
+          // ========== NEW TOOL: CreateStructure ==========
+          {
+            name: 'CreateStructure',
+            description: 'Create a new ABAP DDIC structure in the SAP system',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                structure_name: {
+                  type: 'string',
+                  description: 'Name of the structure (e.g., ZMY_STRUCTURE). Will be converted to uppercase.'
+                },
+                description: {
+                  type: 'string',
+                  description: 'Short description of the structure (max 60 characters)'
+                },
+                package_name: {
+                  type: 'string',
+                  description: 'ABAP package name (e.g., ZPACKAGE or $TMP for local/temporary objects)'
+                },
+                transport_request: {
+                  type: 'string',
+                  description: 'Transport request number (e.g., DEVK900123). Required for non-local packages. Leave empty for $TMP.'
+                },
+                fields: {
+                  type: 'array',
+                  description: 'Array of structure fields',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      name: {
+                        type: 'string',
+                        description: 'Field name'
+                      },
+                      type: {
+                        type: 'string',
+                        description: 'Field type - either built-in type (e.g., abap.char(10), abap.numc(8), abap.string, abap.int4) or data element name'
+                      }
+                    },
+                    required: ['name', 'type']
+                  }
+                },
+                enhancement_category: {
+                  type: 'string',
+                  enum: ['NOT_EXTENSIBLE', 'EXTENSIBLE_ANY', 'EXTENSIBLE_CHARACTER', 'NOT_CLASSIFIED'],
+                  description: 'Enhancement category for the structure (default: NOT_EXTENSIBLE)'
+                }
+              },
+              required: ['structure_name', 'description', 'package_name', 'fields']
+            }
           }
         ]
       };
@@ -330,6 +381,9 @@ export class mcp_abap_adt_server {
           return await handleGetInterface(request.params.arguments);
         case 'GetTransaction':
           return await handleGetTransaction(request.params.arguments);
+        // ========== NEW HANDLER: CreateStructure ==========
+        case 'CreateStructure':
+          return await handleCreateStructure(request.params.arguments);
         default:
           throw new McpError(
             ErrorCode.MethodNotFound,
